@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2011 - EATON
+ *  Copyright (C) 2011-2017 Eaton
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -18,7 +18,8 @@
 
 /*! \file scan_snmp.c
     \brief detect NUT supported SNMP devices
-    \author Frederic Bohe <fredericbohe@eaton.com>
+    \author Frederic Bohe <FredericBohe@Eaton.com>
+    \author Arnaud Quette <ArnaudQuette@Eaton.com>
 */
 
 #include "common.h"
@@ -76,7 +77,6 @@ static pthread_mutex_t dev_mutex;
 long g_usec_timeout ;
 
 /* dynamic link library stuff */
-static char * libname = "libnetsnmp";
 static lt_dlhandle dl_handle = NULL;
 static const char *dl_error = NULL;
 
@@ -97,6 +97,7 @@ static int (*nut_snmp_oid_compare) (const oid *in_name1, size_t len1,
 static void (*nut_snmp_free_pdu) (netsnmp_pdu *pdu);
 static int (*nut_generate_Ku)(const oid * hashtype, u_int hashtype_len,
 			u_char * P, size_t pplen, u_char * Ku, size_t * kulen);
+static char* (*nut_snmp_out_toggle_options)(char *options);
 static const char * (*nut_snmp_api_errstring) (int snmp_errnumber);
 static int (*nut_snmp_errno);
 static oid * (*nut_usmAESPrivProtocol);
@@ -105,7 +106,7 @@ static oid * (*nut_usmHMACSHA1AuthProtocol);
 static oid * (*nut_usmDESPrivProtocol);
 
 /* return 0 on error */
-int nutscan_load_snmp_library()
+int nutscan_load_snmp_library(const char *libname_path)
 {
 	if( dl_handle != NULL ) {
 		/* if previous init failed */
@@ -116,12 +117,17 @@ int nutscan_load_snmp_library()
 		return 1;
 	}
 
-        if( lt_dlinit() != 0 ) {
-                fprintf(stderr, "Error initializing lt_init\n");
-                return 0;
-        }
+	if (libname_path == NULL) {
+		upsdebugx(1, "SNMP library not found. SNMP search disabled");
+		return 0;
+	}
 
-	dl_handle = lt_dlopenext(libname);
+	if( lt_dlinit() != 0 ) {
+		upsdebugx(1, "Error initializing lt_init");
+		return 0;
+	}
+
+	dl_handle = lt_dlopen(libname_path);
 	if (!dl_handle) {
 		dl_error = lt_dlerror();
 		goto err;
@@ -197,6 +203,12 @@ int nutscan_load_snmp_library()
 		goto err;
 	}
 
+	*(void **) (&nut_snmp_out_toggle_options) = lt_dlsym(dl_handle,
+							"snmp_out_toggle_options");
+	if ((dl_error = lt_dlerror()) != NULL)  {
+		goto err;
+	}
+
 	*(void **) (&nut_snmp_api_errstring) = lt_dlsym(dl_handle,
 							"snmp_api_errstring");
 	if ((dl_error = lt_dlerror()) != NULL)  {
@@ -234,7 +246,7 @@ int nutscan_load_snmp_library()
 
 	return 1;
 err:
-        fprintf(stderr, "Cannot load SNMP library (%s) : %s. SNMP search disabled.\n", libname, dl_error);
+	fprintf(stderr, "Cannot load SNMP library (%s) : %s. SNMP search disabled.\n", libname_path, dl_error);
 	dl_handle = (void *)1;
 	lt_dlexit();
 	return 0;
@@ -315,8 +327,8 @@ static void scan_snmp_add_device(nutscan_snmp_t * sec, struct snmp_pdu *response
 
 static struct snmp_pdu * scan_snmp_get_manufacturer(char* oid_str,void* handle)
 {
-        size_t name_len;
-        oid name[MAX_OID_LEN];
+	size_t name_len;
+	oid name[MAX_OID_LEN];
 	struct snmp_pdu *pdu, *response = NULL;
 	int status;
 	int index = 0;
@@ -428,31 +440,31 @@ static int init_session(struct snmp_session * snmp_sess, nutscan_snmp_t * sec)
 		}
 
 		/* Process mandatory fields, based on the security level */
-                switch (snmp_sess->securityLevel) {
-                        case SNMP_SEC_LEVEL_AUTHNOPRIV:
-                                if (sec->authPassword == NULL) {
-                                        fprintf(stderr,
+		switch (snmp_sess->securityLevel) {
+			case SNMP_SEC_LEVEL_AUTHNOPRIV:
+				if (sec->authPassword == NULL) {
+					fprintf(stderr,
 			"authPassword is required for SNMPv3 in %s mode\n",
 						sec->secLevel);
 					return 0;
 				}
 				break;
-                        case SNMP_SEC_LEVEL_AUTHPRIV:
-                                if ((sec->authPassword == NULL) ||
+			case SNMP_SEC_LEVEL_AUTHPRIV:
+				if ((sec->authPassword == NULL) ||
 					(sec->privPassword == NULL)) {
-                                        fprintf(stderr,
+					fprintf(stderr,
 	"authPassword and privPassword are required for SNMPv3 in %s mode\n",
 						sec->secLevel);
 					return 0;
 				}
 				break;
-                        default:
-                                /* nothing else needed */
-                                break;
-                }
+			default:
+				/* nothing else needed */
+				break;
+		}
 
-                /* Process authentication protocol and key */
-               	snmp_sess->securityAuthKeyLen = USM_AUTH_KU_LEN;
+		/* Process authentication protocol and key */
+		snmp_sess->securityAuthKeyLen = USM_AUTH_KU_LEN;
 
 		/* default to MD5 */
 		snmp_sess->securityAuthProto = (*nut_usmHMACMD5AuthProtocol);
@@ -545,8 +557,8 @@ static void * try_SysOID(void * arg)
 	struct snmp_session snmp_sess;
 	void * handle;
 	struct snmp_pdu *pdu, *response = NULL, *resp = NULL;
-        oid name[MAX_OID_LEN];
-        size_t name_len = MAX_OID_LEN;
+	oid name[MAX_OID_LEN];
+	size_t name_len = MAX_OID_LEN;
 	nutscan_snmp_t * sec = (nutscan_snmp_t *)arg;
 	int index = 0;
 	int sysoid_found = 0;
@@ -663,12 +675,17 @@ nutscan_device_t * nutscan_scan_snmp(const char * start_ip, const char * stop_ip
 	pthread_mutex_init(&dev_mutex,NULL);
 #endif
 
-        if( !nutscan_avail_snmp ) {
-                return NULL;
-        }
-
+	if( !nutscan_avail_snmp ) {
+		return NULL;
+	}
 
 	g_usec_timeout = usec_timeout;
+
+	/* Force numeric OIDs resolution (ie, do not resolve to textual names)
+	 * This is mostly for the convenience of debug output */
+	if (nut_snmp_out_toggle_options("n") != NULL) {
+		upsdebugx(1, "Failed to enable numeric OIDs resolution");
+	}
 
 	/* Initialize the SNMP library */
 	(*nut_init_snmp)("nut-scanner");
@@ -683,8 +700,15 @@ nutscan_device_t * nutscan_scan_snmp(const char * start_ip, const char * stop_ip
 #ifdef HAVE_PTHREAD
 		if (pthread_create(&thread,NULL,try_SysOID,(void*)tmp_sec)==0){
 			thread_count++;
-			thread_array = realloc(thread_array,
+			pthread_t *new_thread_array = realloc(thread_array,
 						thread_count*sizeof(pthread_t));
+			if (new_thread_array == NULL) {
+				upsdebugx(1, "%s: Failed to realloc thread", __func__);
+				break;
+			}
+			else {
+				thread_array = new_thread_array;
+			}
 			thread_array[thread_count-1] = thread;
 		}
 #else

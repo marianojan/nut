@@ -2,7 +2,7 @@
  *
  *  Copyright (C)
  *        2003 - 2015 Arnaud Quette <arnaud.quette@free.fr>
- *        2015 Arnaud Quette <ArnaudQuette@Eaton.com>
+ *        2015 - 2016 Eaton / Arnaud Quette <ArnaudQuette@Eaton.com>
  *
  *  Sponsored by MGE UPS SYSTEMS <http://www.mgeups.com>
  *
@@ -36,8 +36,9 @@
 #include "main.h"		/* for getval() */
 #include "usbhid-ups.h"
 #include "mge-hid.h"
+#include <math.h>
 
-#define MGE_HID_VERSION		"MGE HID 1.38"
+#define MGE_HID_VERSION		"MGE HID 1.43"
 
 /* (prev. MGE Office Protection Systems, prev. MGE UPS SYSTEMS) */
 /* Eaton */
@@ -51,6 +52,15 @@
 
 /* Hewlett Packard */
 #define HP_VENDORID 0x03f0
+
+/* AEG */
+#define AEG_VENDORID 0x2b2d
+
+/* Phoenixtec Power Co., Ltd */
+#define PHOENIXTEC 0x06da
+
+/* IBM */
+#define IBM_VENDORID 0x04b3
 
 #ifndef SHUT_MODE
 #include "usb-common.h"
@@ -74,6 +84,13 @@ static usb_device_id_t mge_usb_device_table[] = {
 	/* various models */
 	{ USB_DEVICE(HP_VENDORID, 0x1fe7), NULL },
 	{ USB_DEVICE(HP_VENDORID, 0x1fe8), NULL },
+
+	/* PROTECT B / NAS */
+	{ USB_DEVICE(AEG_VENDORID, 0xffff), NULL },
+	{ USB_DEVICE(PHOENIXTEC, 0xffff), NULL },
+
+	/* 6000 VA LCD 4U Rack UPS; 5396-1Kx */
+	{ USB_DEVICE(IBM_VENDORID, 0x0001), NULL },
 
 	/* Terminating entry */
 	{ -1, -1, NULL }
@@ -143,10 +160,10 @@ static char		mge_scratch_buf[20];
  * annunciate float mode until the charger power starts falling from the maximum
  * level indicating the battery is truly at the float voltage or in float mode.
  * The %charge level is based on battery voltage and the charge mode timer
- * (should be 48 hours) and some UPSs add in a value that’s related to charger
+ * (should be 48 hours) and some UPSs add in a value that's related to charger
  * power output.  So you can have UPS that enters float mode with anywhere
  * from 80% or greater battery capacity.
- * float mode is not important from the software’s perspective, it’s there to
+ * float mode is not important from the software's perspective, it's there to
  * help determine if the charger is advancing correctly.
  * So in float mode, the charger is charging the battery, so by definition you
  * can assert the CHRG flag in NUT when in “float” mode or “charge” mode.
@@ -634,6 +651,39 @@ static const char *eaton_check_country_fun(double value)
 
 static info_lkp_t eaton_check_country_info[] = {
 	{ 0, "dummy", eaton_check_country_fun },
+	{ 0, NULL, NULL }
+};
+
+/* When UPS.PowerConverter.Output.ActivePower is not present,
+ * compute a realpower approximation using available data */
+static const char *eaton_compute_realpower_fun(double value)
+{
+	const char *str_ups_load = dstate_getinfo("ups.load");
+	const char *str_power_nominal = dstate_getinfo("ups.power.nominal");
+	const char *str_powerfactor = dstate_getinfo("output.powerfactor");
+	float powerfactor = 0.80;
+	int power_nominal = 0;
+	int ups_load = 0;
+	double realpower = 0;
+	if (str_power_nominal && str_ups_load) {
+		/* Extract needed values */
+		ups_load = atoi(str_ups_load);
+		power_nominal = atoi(str_power_nominal);
+		if (str_powerfactor)
+			powerfactor = atoi(str_powerfactor);
+		/* Compute the value */
+		realpower = round(ups_load * 0.01 * power_nominal * powerfactor);
+		snprintf(mge_scratch_buf, sizeof(mge_scratch_buf), "%.0f", realpower);
+		upsdebugx(1, "eaton_compute_realpower_fun(%s)", mge_scratch_buf);
+		return mge_scratch_buf;
+	}
+	/* else can't process */
+	/* Return NULL, not to get the value published! */
+	return NULL;
+}
+
+static info_lkp_t eaton_compute_realpower_info[] = {
+	{ 0, "dummy", eaton_compute_realpower_fun },
 	{ 0, NULL, NULL }
 };
 
@@ -1126,6 +1176,9 @@ static hid_info_t mge_hid2nut[] =
 	{ "ups.timer.reboot", 0, 0, "UPS.PowerSummary.DelayBeforeReboot", NULL, "%.0f", HU_FLAG_QUICK_POLL, NULL},
 	{ "ups.test.result", 0, 0, "UPS.BatterySystem.Battery.Test", NULL, "%s", 0, test_read_info },
 	{ "ups.test.interval", ST_FLAG_RW | ST_FLAG_STRING, 8, "UPS.BatterySystem.Battery.TestPeriod", NULL, "%.0f", HU_FLAG_SEMI_STATIC, NULL },
+	/* Duplicate data for some units (such as 3S) that use a different path
+	 * Only the first valid one will be used */
+	{ "ups.beeper.status", 0 ,0, "UPS.BatterySystem.Battery.AudibleAlarmControl", NULL, "%s", HU_FLAG_SEMI_STATIC, beeper_info },
 	{ "ups.beeper.status", 0 ,0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "%s", HU_FLAG_SEMI_STATIC, beeper_info },
 	{ "ups.temperature", 0, 0, "UPS.PowerSummary.Temperature", NULL, "%s", 0, kelvin_celsius_conversion },
 	{ "ups.power", 0, 0, "UPS.PowerConverter.Output.ApparentPower", NULL, "%.0f", 0, NULL },
@@ -1134,6 +1187,9 @@ static hid_info_t mge_hid2nut[] =
 	{ "ups.L3.power", 0, 0, "UPS.PowerConverter.Output.Phase.[3].ApparentPower", NULL, "%.0f", 0, NULL },
 	{ "ups.power.nominal", 0, 0, "UPS.Flow.[4].ConfigApparentPower", NULL, "%.0f", HU_FLAG_STATIC, NULL },
 	{ "ups.realpower", 0, 0, "UPS.PowerConverter.Output.ActivePower", NULL, "%.0f", 0, NULL },
+	/* When not available, process an approximation from other data,
+	 * but map to apparent power to be called */
+	{ "ups.realpower", 0, 0, "UPS.Flow.[4].ConfigApparentPower", NULL, "-1", 0, eaton_compute_realpower_info },
 	{ "ups.L1.realpower", 0, 0, "UPS.PowerConverter.Output.Phase.[1].ActivePower", NULL, "%.0f", 0, NULL },
 	{ "ups.L2.realpower", 0, 0, "UPS.PowerConverter.Output.Phase.[2].ActivePower", NULL, "%.0f", 0, NULL },
 	{ "ups.L3.realpower", 0, 0, "UPS.PowerConverter.Output.Phase.[3].ActivePower", NULL, "%.0f", 0, NULL },
@@ -1322,8 +1378,13 @@ static hid_info_t mge_hid2nut[] =
 	{ "shutdown.reboot", 0, 0, "UPS.PowerSummary.DelayBeforeReboot", NULL, "10", HU_TYPE_CMD, NULL},
 	{ "beeper.off", 0, 0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "1", HU_TYPE_CMD, NULL },
 	{ "beeper.on", 0, 0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "2", HU_TYPE_CMD, NULL },
+	/* Duplicate commands for some units (such as 3S) that use a different path
+	 * Only the first valid one will be used */
+	{ "beeper.mute", 0, 0, "UPS.BatterySystem.Battery.AudibleAlarmControl", NULL, "3", HU_TYPE_CMD, NULL },
 	{ "beeper.mute", 0, 0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "3", HU_TYPE_CMD, NULL },
+	{ "beeper.disable", 0, 0, "UPS.BatterySystem.Battery.AudibleAlarmControl", NULL, "1", HU_TYPE_CMD, NULL },
 	{ "beeper.disable", 0, 0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "1", HU_TYPE_CMD, NULL },
+	{ "beeper.enable", 0, 0, "UPS.BatterySystem.Battery.AudibleAlarmControl", NULL, "2", HU_TYPE_CMD, NULL },
 	{ "beeper.enable", 0, 0, "UPS.PowerSummary.AudibleAlarmControl", NULL, "2", HU_TYPE_CMD, NULL },
 
 	/* Command for the outlet collection */

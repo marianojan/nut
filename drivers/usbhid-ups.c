@@ -5,6 +5,7 @@
  *   2005      John Stamp <kinsayder@hotmail.com>
  *   2005-2006 Peter Selinger <selinger@users.sourceforge.net>
  *   2007-2009 Arjen de Korte <adkorte-guest@alioth.debian.org>
+ *   2016      Eaton / Arnaud Quette <ArnaudQuette@Eaton.com>
  *
  * This program was sponsored by MGE UPS SYSTEMS, and now Eaton
  *
@@ -27,7 +28,7 @@
  */
 
 #define DRIVER_NAME	"Generic HID driver"
-#define DRIVER_VERSION		"0.41"
+#define DRIVER_VERSION		"0.42"
 
 #include "main.h"
 #include "libhid.h"
@@ -557,6 +558,7 @@ int instcmd(const char *cmdname, const char *extradata)
 
 	/* Check for fallback if not found */
 	if (hidups_item == NULL) {
+		upsdebugx(3, "%s: cmdname '%s' not found; checking for alternatives", __func__, cmdname);
 
 		if (!strcasecmp(cmdname, "load.on")) {
 			return instcmd("load.on.delay", "0");
@@ -602,6 +604,8 @@ int instcmd(const char *cmdname, const char *extradata)
 		return STAT_INSTCMD_INVALID;
 	}
 
+	upsdebugx(3, "%s: using Path '%s'", __func__, hidups_item->hidpath);
+
 	/* Check if the item is an instant command */
 	if (!(hidups_item->hidflags & HU_TYPE_CMD)) {
 		upsdebugx(2, "instcmd: %s is not an instant command\n", cmdname);
@@ -620,7 +624,7 @@ int instcmd(const char *cmdname, const char *extradata)
 
 	/* Actual variable setting */
 	if (HIDSetDataValue(udev, hidups_item->hiddata, value) == 1) {
-		upsdebugx(5, "instcmd: SUCCEED\n");
+		upsdebugx(3, "instcmd: SUCCEED\n");
 		/* Set the status so that SEMI_STATIC vars are polled */
 		data_has_changed = TRUE;
 		return STAT_INSTCMD_HANDLED;
@@ -911,18 +915,24 @@ void upsdrv_initups(void)
 {
 	int ret;
 	char *val;
+
+	upsdebugx(2, "Initializing an USB-connected UPS with library %s " \
+		"(NUT subdriver name='%s' ver='%s')",
+		dstate_getinfo("driver.version.usb"),
+		comm_driver->name, comm_driver->version );
+
 #ifdef SHUT_MODE
 	/*!
 	 * SHUT is a serial protocol, so it needs
 	 * only the device path
 	 */
-	upsdebugx(1, "upsdrv_initups...");
+	upsdebugx(1, "upsdrv_initups (SHUT)...");
 
 	subdriver_matcher = device_path;
 #else
 	char *regex_array[6];
 
-	upsdebugx(1, "upsdrv_initups...");
+	upsdebugx(1, "upsdrv_initups (non-SHUT)...");
 
 	subdriver_matcher = &subdriver_matcher_struct;
 
@@ -1196,6 +1206,12 @@ static bool_t hid_ups_walk(walkmode_t mode)
 	double		value;
 	int		retcode;
 
+#ifndef SHUT_MODE
+	/* extract the VendorId for further testing */
+	int vendorID = usb_device((struct usb_dev_handle *)udev)->descriptor.idVendor;
+	int productID = usb_device((struct usb_dev_handle *)udev)->descriptor.idProduct;
+#endif
+
 	/* 3 modes: HU_WALKMODE_INIT, HU_WALKMODE_QUICK_UPDATE and HU_WALKMODE_FULL_UPDATE */
 
 	/* Device data walk ----------------------------- */
@@ -1276,6 +1292,15 @@ static bool_t hid_ups_walk(walkmode_t mode)
 			fatalx(EXIT_FAILURE, "hid_ups_walk: unknown update mode!");
 		}
 
+#ifndef SHUT_MODE
+		/* skip report 0x54 for Tripplite SU3000LCD2UHV due to firmware bug */
+		if ((vendorID == 0x09ae) && (productID == 0x1330)) {
+			if (item->hiddata && (item->hiddata->ReportID == 0x54)) {
+				continue;
+			}
+		}
+#endif
+
 		retcode = HIDGetDataValue(udev, item->hiddata, &value, poll_interval);
 
 		switch (retcode)
@@ -1314,6 +1339,8 @@ static bool_t hid_ups_walk(walkmode_t mode)
 			item->hiddata->Offset, item->hiddata->Size, value);
 
 		if (item->hidflags & HU_TYPE_CMD) {
+			upsdebugx(3, "Adding command '%s' using Path '%s'",
+				item->info_type, item->hidpath);
 			dstate_addcmd(item->info_type);
 			continue;
 		}

@@ -3,6 +3,7 @@
    Copyright (C)
 	2008-2009	Arjen de Korte <adkorte-guest@alioth.debian.org>
 	2009		Arnaud Quette <ArnaudQuette@Eaton.com>
+	2017		Jim Klimov <EvgenyKlimov@Eaton.com>
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -30,17 +31,30 @@
 
 #include "netxml-ups.h"
 #include "mge-xml.h"
+#include "main.h" /* for testvar() */
 
-#define MGE_XML_VERSION		"MGEXML/0.23"
+#define MGE_XML_VERSION		"MGEXML/0.28"
+
 #define MGE_XML_INITUPS		"/"
 #define MGE_XML_INITINFO	"/mgeups/product.xml /product.xml /ws/product.xml"
 
 #define ST_FLAG_RW		0x0001
 #define ST_FLAG_STATIC		0x0002
 
-extern int 	shutdown_duration;
+extern int	shutdown_duration;
 
 static int	mge_ambient_value = 0;
+
+/* The number of phases is not present in XML data as a separate node,
+ * but we can infer it from presence of non-zero data on several
+ * per-line nodes. */
+static int
+	inited_phaseinfo_in = 0,
+	inited_phaseinfo_bypass = 0,
+	inited_phaseinfo_out = 0,
+	num_inphases = -1,
+	num_bypassphases = -1,
+	num_outphases = -1;
 
 static char	mge_scratch_buf[256];
 
@@ -48,6 +62,9 @@ static char	var[128];
 static char	val[128];
 
 static int	mge_shutdown_pending = 0;
+
+/* This flag flips to 0 when/if we post the detailed deprecation message */
+static int	mge_report_deprecation__convert_deci = 1;
 
 typedef enum {
 	ROOTPARENT = NE_XML_STATEROOT,
@@ -406,9 +423,33 @@ static const char *on_off_info(const char *val)
 
 static const char *convert_deci(const char *val)
 {
-	snprintf(mge_scratch_buf, sizeof(mge_scratch_buf), "%.1f", 0.1 * (float)atoi(val));
+	/* Note: this routine was needed for original MGE devices, before the company
+	 * was bought out and split in 2007 between Eaton (1ph devices) and Schneider
+	 * (3ph devices). Those firmwares back when the driver was written apparently
+	 * served 10x the measured values. Not sure if any such units are in service
+	 * now (with same FW, and with no upgrade path). Reign of XML/PDC is waning.
+	 * For currently known NetXML servers, the value served is good without more
+	 * conversions. If older devices pop up in the field, we can add an estimation
+	 * by e.g. reported voltage and amps (to be an order of magnitude for power).
+	 * Alternately we can look at model names and/or firmware versions or release
+	 * dates, if we get those and if we know enough to map them to either logic. */
 
-	return mge_scratch_buf;
+	if (testvar("do_convert_deci")) {
+		/* Old code for old devices: */
+		if (mge_report_deprecation__convert_deci) {
+			upslogx(LOG_NOTICE, "%s() is now deprecated, so values from XML are normally not decimated. This driver instance has however configured do_convert_deci in your ups.conf, so this behavior for old MGE NetXML-capable devices is preserved.", __func__);
+			mge_report_deprecation__convert_deci = 0;
+		}
+		snprintf(mge_scratch_buf, sizeof(mge_scratch_buf), "%.1f", 0.1 * (float)atoi(val));
+		return mge_scratch_buf;
+	}
+
+	if (mge_report_deprecation__convert_deci) {
+		upslogx(LOG_NOTICE, "%s() is now deprecated, so values from XML are not decimated. If you happen to have an old MGE NetXML-capable device that now shows measurements 10x too big, and a firmware update does not solve this, please inform NUT devs via the issue tracker at %s with details about your hardware and firmware versions. Also try to enable do_convert_deci in your ups.conf", __func__, PACKAGE_BUGREPORT );
+		mge_report_deprecation__convert_deci = 0;
+	}
+	upsdebugx(5, "%s() is now deprecated, so value '%s' is not decimated. If this change broke your setup, please see details logged above.", __func__, val);
+	return val;
 }
 
 /* Ignore a zero value if the UPS is not switched off */
@@ -579,6 +620,7 @@ static xml_info_t mge_xml2nut[] = {
 	/* Not used for now; might however be used in future for history & stats collection
 	{ "System.History.Log.Interval", ST_FLAG_RW, 0, "System.History.Log.Interval", 0, 0, NULL },
 	*/
+#if (0)  /* not interresting for NUT */
 	{ "System.Environment.Log.Interval", ST_FLAG_RW, 0, "System.Environment.Log.Interval", 0, 0, NULL },
 	{ "System.Outlet[1].iName", ST_FLAG_RW, 0, "System.Outlet[1].iName", 0, 0, NULL },
 	/* Mapped as ups.delay.shutdown
@@ -622,7 +664,6 @@ static xml_info_t mge_xml2nut[] = {
 	{ "System.Password", ST_FLAG_RW, 0, "System.Password", 0, 0, NULL },
 	{ "System.Security", ST_FLAG_RW, 0, "System.Security", 0, 0, NULL },
 	{ "System.FirmwareUpgrade", ST_FLAG_RW, 0, "System.FirmwareUpgrade", 0, 0, NULL },
-#if (0)  /* not interresting for NUT */
 	{ "System.Network.SNMP.ReadCommunity", ST_FLAG_RW, 0, "System.Network.SNMP.ReadCommunity", 0, 0, NULL },
 	{ "System.Network.SNMP.ReadCommunityName", 0, 0, "System.Network.SNMP.ReadCommunityName", 0, 0, NULL },
 	{ "System.Network.SNMP.ReadCommunitySecurityLevel", 0, 0, "System.Network.SNMP.ReadCommunitySecurityLevel", 0, 0, NULL },
@@ -813,19 +854,14 @@ static xml_info_t mge_xml2nut[] = {
 	{ "System.ClientCfg.ShutdownDuration", ST_FLAG_RW, 0, "System.ClientCfg.ShutdownDuration", 0, 0, NULL },
 	{ "System.ClientCfg.BroadcastAdmins", ST_FLAG_RW, 0, "System.ClientCfg.BroadcastAdmins", 0, 0, NULL },
 	{ "System.ClientCfg.BroadcastUsers", ST_FLAG_RW, 0, "System.ClientCfg.BroadcastUsers", 0, 0, NULL },
-#endif  /* not interresting for NUT */
 	{ "Environment.iName", ST_FLAG_RW, 0, "Environment.iName", 0, 0, NULL },
 	{ "Environment.Temperature.Unit", ST_FLAG_RW, 0, "Environment.Temperature.Unit", 0, 0, NULL },
-	{ "Environment.Temperature.HighThreshold", ST_FLAG_RW, 0, "Environment.Temperature.HighThreshold", 0, 0, NULL },
-	{ "Environment.Temperature.LowThreshold", ST_FLAG_RW, 0, "Environment.Temperature.LowThreshold", 0, 0, NULL },
 	{ "Environment.Temperature.Hysteresis", ST_FLAG_RW, 0, "Environment.Temperature.Hysteresis", 0, 0, NULL },
 	{ "Environment.Temperature.Offset", ST_FLAG_RW, 0, "Environment.Temperature.Offset", 0, 0, NULL },
 	{ "Environment.Temperature.HighNotify", ST_FLAG_RW, 0, "Environment.Temperature.HighNotify", 0, 0, NULL },
 	{ "Environment.Temperature.LowNotify", ST_FLAG_RW, 0, "Environment.Temperature.LowNotify", 0, 0, NULL },
 	{ "Environment.Temperature.HighShutdown", ST_FLAG_RW, 0, "Environment.Temperature.HighShutdown", 0, 0, NULL },
 	{ "Environment.Temperature.LowShutdown", ST_FLAG_RW, 0, "Environment.Temperature.LowShutdown", 0, 0, NULL },
-	{ "Environment.Humidity.HighThreshold", ST_FLAG_RW, 0, "Environment.Humidity.HighThreshold", 0, 0, NULL },
-	{ "Environment.Humidity.LowThreshold", ST_FLAG_RW, 0, "Environment.Humidity.LowThreshold", 0, 0, NULL },
 	{ "Environment.Humidity.Hysteresis", ST_FLAG_RW, 0, "Environment.Humidity.Hysteresis", 0, 0, NULL },
 	{ "Environment.Humidity.Offset", ST_FLAG_RW, 0, "Environment.Humidity.Offset", 0, 0, NULL },
 	{ "Environment.Humidity.HighNotify", ST_FLAG_RW, 0, "Environment.Humidity.HighNotify", 0, 0, NULL },
@@ -850,6 +886,7 @@ static xml_info_t mge_xml2nut[] = {
 	{ "System.TimeNtp", ST_FLAG_RW, 0, "System.TimeNtp", 0, 0, NULL },
 	{ "System.TimeZone", ST_FLAG_RW, 0, "System.TimeZone", 0, 0, NULL },
 	{ "System.TimeDaylight", ST_FLAG_RW, 0, "System.TimeDaylight", 0, 0, NULL },
+#endif  /* not interresting for NUT */
 
 	/* Special case: boolean values that are mapped to ups.status and ups.alarm */
 	{ NULL, 0, 0, "UPS.PowerSummary.PresentStatus.ACPresent", 0, 0, online_info },
@@ -1013,13 +1050,13 @@ static xml_info_t mge_xml2nut[] = {
 
 	/* Ambient page */
 	{ "ambient.humidity", 0, 0, "Environment.Humidity", 0, 0, NULL },
-	{ "ambient.humidity.high", 0, 0, "Environment.Humidity.HighThreshold", 0, 0, NULL },
-	{ "ambient.humidity.low", 0, 0, "Environment.Humidity.LowThreshold", 0, 0, NULL },
+	{ "ambient.humidity.high", ST_FLAG_RW, 0, "Environment.Humidity.HighThreshold", 0, 0, NULL },
+	{ "ambient.humidity.low", ST_FLAG_RW, 0, "Environment.Humidity.LowThreshold", 0, 0, NULL },
 	{ "ambient.humidity.maximum", 0, 0, "Environment.PresentStatus.HighHumidity", 0, 0, mge_ambient_info },
 	{ "ambient.humidity.minimum", 0, 0, "Environment.PresentStatus.LowHumidity", 0, 0, mge_ambient_info },
 	{ "ambient.temperature", 0, 0, "Environment.Temperature", 0, 0, NULL },
-	{ "ambient.temperature.high", 0, 0, "Environment.Temperature.HighThreshold", 0, 0, NULL },
-	{ "ambient.temperature.low", 0, 0, "Environment.Temperature.LowThreshold", 0, 0, NULL },
+	{ "ambient.temperature.high", ST_FLAG_RW, 0, "Environment.Temperature.HighThreshold", 0, 0, NULL },
+	{ "ambient.temperature.low", ST_FLAG_RW, 0, "Environment.Temperature.LowThreshold", 0, 0, NULL },
 	{ "ambient.temperature.maximum", 0, 0, "Environment.PresentStatus.HighTemperature", 0, 0, mge_ambient_info },
 	{ "ambient.temperature.minimum", 0, 0, "Environment.PresentStatus.LowTemperature", 0, 0, mge_ambient_info },
 
@@ -1089,6 +1126,7 @@ static int mge_xml_startelm_cb(void *userdata, int parent, const char *nspace, c
 			/* name="Network Management Card" type="Mosaic M" version="BA" */
 			/* name="Network Management Card" type="Transverse" version="GB (SN 49EH29101)" */
 			/* name="Monitored ePDU" type="Monitored ePDU" version="Version Upgrade" */
+			/* name="PDU Network Management Card" type="SCOB" version="02.00.0036" signature="34008876" protocol="XML.V4" */
 			int	i;
 			for (i = 0; atts[i] && atts[i+1]; i += 2) {
 				if (!strcasecmp(atts[i], "name")) {
@@ -1107,10 +1145,17 @@ static int mge_xml_startelm_cb(void *userdata, int parent, const char *nspace, c
 					snprintfcat(val, sizeof(val), "/%s", atts[i+1]);
 					s = strstr(val, " (SN ");
 					if (s) {
-						dstate_setinfo("ups.serial", "%s", rtrim(s + 5, ')'));
+						dstate_setinfo("ups.serial", "%s", str_rtrim(s + 5, ')'));
 						s[0] = '\0';
 					}
 					dstate_setinfo("ups.firmware.aux", "%s", val);
+				}
+				/* netxml-ups currently only supports XML version 3 (for UPS),
+				 * and not version 4 (for UPS and PDU)! */
+				if (!strcasecmp(atts[i], "protocol")) {
+					if (!strcasecmp(atts[i+1], "XML.V4")) {
+						fatalx(EXIT_FAILURE, "XML v4 protocol is not supported!");
+					}
 				}
 			}
 			state = PRODUCT_INFO;
@@ -1404,6 +1449,7 @@ static int mge_xml_endelm_cb(void *userdata, int state, const char *nspace, cons
 
 			if (info->convert) {
 				value = info->convert(val);
+				upsdebugx(4, "-> XML variable %s [%s] which maps to NUT variable %s was converted to value %s for the NUT driver state", var, val, info->nutname, value);
 			} else {
 				value = val;
 			}
@@ -1416,6 +1462,25 @@ static int mge_xml_endelm_cb(void *userdata, int state, const char *nspace, cons
 		}
 
 		upsdebugx(3, "-> XML variable %s [%s] doesn't map to any NUT variable", var, val);
+		break;
+
+	case PI_GET_OBJECT:
+	case GET_OBJECT:
+		/* We've just got a snapshot of all runtime data, saved well into
+		 * dstate's already, so can estimate missing values if needed. */
+
+		/* For phase setup, we assume it does not change during run-time.
+		 * Essentially this means that once we've detected it is N-phase,
+		 * it stays this way for the rest of the driver run/life-time. */
+		/* To change this behavior just flip the maychange flag to "1" */
+
+		dstate_detect_phasecount("input.", 1,
+			&inited_phaseinfo_in, &num_inphases, 0);
+		dstate_detect_phasecount("input.bypass.", 1,
+			&inited_phaseinfo_bypass, &num_bypassphases, 0);
+		dstate_detect_phasecount("output.", 1,
+			&inited_phaseinfo_out, &num_outphases, 0);
+
 		break;
 	}
 
