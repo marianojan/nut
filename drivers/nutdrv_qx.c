@@ -63,6 +63,7 @@
 /* == Subdrivers == */
 /* Include all known subdrivers */
 #include "nutdrv_qx_bestups.h"
+#include "nutdrv_qx_hunnox.h"
 #include "nutdrv_qx_mecer.h"
 #include "nutdrv_qx_megatec.h"
 #include "nutdrv_qx_megatec-old.h"
@@ -84,6 +85,7 @@ static subdriver_t	*subdriver_list[] = {
 	&mecer_subdriver,
 	&megatec_subdriver,
 	&zinto_subdriver,
+	&hunnox_subdriver,
 	/* Fallback Q1 subdriver */
 	&q1_subdriver,
 	NULL
@@ -687,45 +689,46 @@ static int 	hunnox_protocol(int asking_for) {
 	char	buf[1030];
 	int	ret;
 
+	int langid_fix_local = 0x0409;
+
+	if (langid_fix != -1) {
+		langid_fix_local = langid_fix;
+	}
+
 	switch (hunnox_step) {
 		case 0:
 			upsdebugx(3, "asking for: %02X", 0x00);
-			ret = usb_get_string(udev, 0x00, 0x0409, buf, 1026);
-			ret = usb_get_string(udev, 0x00, 0x0409, buf, 1026);
-			ret = usb_get_string(udev, 0x01, 0x0409, buf, 1026);
+			ret = usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
+			ret = usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
+			ret = usb_get_string(udev, 0x01, langid_fix_local, buf, 1026);
 			usleep(10000);
 			break;
-                case 1:
+		case 1:
 			if (asking_for != 0x0d) {
 				upsdebugx(3, "asking for: %02X", 0x0d);
-	                        ret = usb_get_string(udev, 0x0d, 0x0409, buf, 102);
+	            ret = usb_get_string(udev, 0x0d, langid_fix_local, buf, 102);
 			}
-                        break;
+            break;
 		case 2:
 			if (asking_for != 0x03) {
-                                upsdebugx(3, "asking for: %02X", 0x03);
-                                ret = usb_get_string(udev, 0x03, 0x0409, buf, 102);
-                        }
-                        break;
-                case 3:
+				upsdebugx(3, "asking for: %02X", 0x03);
+				ret = usb_get_string(udev, 0x03, langid_fix_local, buf, 102);
+			}
+			break;
+		case 3:
 			if (asking_for != 0x0c) {
 				upsdebugx(3, "asking for: %02X", 0x0c);
-        	                ret = usb_get_string(udev, 0x0c, 0x0409, buf, 102);
+				ret = usb_get_string(udev, 0x0c, langid_fix_local, buf, 102);
 			}
-                        break;
+			break;
 		default:
-			hunnox_step = 2;
+			hunnox_step = 0;
 	}
 	hunnox_step++;
 	if (hunnox_step > 3) {
 		hunnox_step = 1;
 	}
 
-/*	if (hunnox_step < 3) {
-		return -1;
-	} else {
-		return 0;
-	}*/
 	return 0;
 }
 
@@ -871,8 +874,18 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 	return snprintf(buf, buflen, "%s", cmd);
 }
 
+
+static int	fabula_command_hunnox(const char *cmd, char *buf, size_t buflen) {
+	return _fabula_command(cmd, buf, buf_len, TRUE)
+}
+
+static int	fabula_command(const char *cmd, char *buf, size_t buflen) {
+	return _fabula_command(cmd, buf, buf_len, FALSE)
+}
+
+
 /* Fabula communication subdriver */
-static int	fabula_command(const char *cmd, char *buf, size_t buflen)
+static int	_fabula_command(const char *cmd, char *buf, size_t buflen, bool hunnox_patch)
 {
 	const struct {
 		const char	*str;	/* Megatec command */
@@ -941,8 +954,25 @@ static int	fabula_command(const char *cmd, char *buf, size_t buflen)
 
 	upsdebugx(4, "command index: 0x%02x", index);
 
+	if (hunnox_patch) {
+		// Enable lock-step protocol for Hunnox
+		if  (hunnox_protocol(index) != 0) {
+			return 0;
+		}
+
+		// Seems that if we inform a large buffer, the USB locks.
+		// This value was captured from the Windows "official" client.
+		if (buflen > 102) {
+			buflen = 102;
+		}
+	}
+
 	/* Send command/Read reply */
-	ret = usb_get_string_simple(udev, index, buf, buflen);
+	if (langid_fix != -1) {
+		ret = usb_get_string(udev, index, langid_fix, buf, buflen);
+	} else {		
+		ret = usb_get_string_simple(udev, index, buf, buflen);
+	}
 
 	if (ret <= 0) {
 		upsdebugx(3, "read: %s (%d)", ret ? usb_strerror() : "timeout", ret);
@@ -1133,6 +1163,11 @@ static void	*fabula_subdriver(USBDevice_t *device)
 	return NULL;
 }
 
+static void *fabula_hunnox_subdriver(USBDevice_t *device)
+{
+	subdriver_command = &fabula_command_hunnox;
+}
+
 static void	*fuji_subdriver(USBDevice_t *device)
 {
 	subdriver_command = &fuji_command;
@@ -1163,6 +1198,7 @@ static qx_usb_device_id_t	qx_usb_id[] = {
 	{ USB_DEVICE(0x14f0, 0x00c9),	NULL,		NULL,			&phoenix_subdriver },	/* GE EP series */
 	{ USB_DEVICE(0x0483, 0x0035),	NULL,		NULL,			&sgs_subdriver },	/* TS Shara UPSes */
 	{ USB_DEVICE(0x0001, 0x0000),	"MEC",		"MEC0003",		&fabula_subdriver },	/* Fideltronik/MEC LUPUS 500 USB */
+	{ USB_DEVICE(0x0001, 0x0000),	NULL,		"MEC0003",		&fabula_hunnox_subdriver },	/* Hunnox */
 	{ USB_DEVICE(0x0001, 0x0000),	"ATCL FOR UPS",	"ATCL FOR UPS",		&fuji_subdriver },	/* Fuji UPSes */
 	{ USB_DEVICE(0x0001, 0x0000),	NULL,		NULL,			&krauler_subdriver },	/* Krauler UP-M500VA */
 	/* End of list */
