@@ -689,29 +689,25 @@ static int 	hunnox_protocol(int asking_for) {
 
 	switch (hunnox_step) {
 		case 0:
-		case 1:
 			upsdebugx(3, "asking for: %02X", 0x00);
 			ret = usb_get_string(udev, 0x00, 0x0409, buf, 1026);
+			ret = usb_get_string(udev, 0x00, 0x0409, buf, 1026);
+			ret = usb_get_string(udev, 0x01, 0x0409, buf, 1026);
 			usleep(10000);
 			break;
-                case 2:
-			upsdebugx(3, "asking for: %02X", 0x01);
-                        ret = usb_get_string(udev, 0x01, 0x0409, buf, 1026);
-			usleep(10000);
-                        break;
-                case 3:
+                case 1:
 			if (asking_for != 0x0d) {
 				upsdebugx(3, "asking for: %02X", 0x0d);
 	                        ret = usb_get_string(udev, 0x0d, 0x0409, buf, 102);
 			}
                         break;
-		case 4:
+		case 2:
 			if (asking_for != 0x03) {
                                 upsdebugx(3, "asking for: %02X", 0x03);
                                 ret = usb_get_string(udev, 0x03, 0x0409, buf, 102);
                         }
                         break;
-                case 5:
+                case 3:
 			if (asking_for != 0x0c) {
 				upsdebugx(3, "asking for: %02X", 0x0c);
         	                ret = usb_get_string(udev, 0x0c, 0x0409, buf, 102);
@@ -721,15 +717,16 @@ static int 	hunnox_protocol(int asking_for) {
 			hunnox_step = 2;
 	}
 	hunnox_step++;
-	if (hunnox_step > 5) {
-		hunnox_step = 3;
+	if (hunnox_step > 3) {
+		hunnox_step = 1;
 	}
 
-	if (hunnox_step < 3) {
+/*	if (hunnox_step < 3) {
 		return -1;
 	} else {
 		return 0;
-	}
+	}*/
+	return 0;
 }
 
 /* Krauler communication subdriver */
