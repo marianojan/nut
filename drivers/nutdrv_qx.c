@@ -126,6 +126,8 @@ static bool_t	data_has_changed = FALSE;	/* for SEMI_STATIC data polling */
 
 static time_t	lastpoll;	/* Timestamp the last polling */
 
+static int	hunnox_step = 0;
+
 #if defined(QX_USB) && defined(QX_SERIAL)
 static int	is_usb = 0;	/* Whether the device is connected through USB (1) or serial (0) */
 #endif	/* QX_USB && QX_SERIAL */
@@ -680,6 +682,56 @@ static int	ippon_command(const char *cmd, char *buf, size_t buflen)
 	return (int)len;
 }
 
+
+static int 	hunnox_protocol(int asking_for) {
+	char	buf[1030];
+	int	ret;
+
+	switch (hunnox_step) {
+		case 0:
+		case 1:
+			upsdebugx(3, "asking for: %02X", 0x00);
+			ret = usb_get_string(udev, 0x00, 0x0409, buf, 1026);
+			usleep(10000);
+			break;
+                case 2:
+			upsdebugx(3, "asking for: %02X", 0x01);
+                        ret = usb_get_string(udev, 0x01, 0x0409, buf, 1026);
+			usleep(10000);
+                        break;
+                case 3:
+			if (asking_for != 0x0d) {
+				upsdebugx(3, "asking for: %02X", 0x0d);
+	                        ret = usb_get_string(udev, 0x0d, 0x0409, buf, 102);
+			}
+                        break;
+		case 4:
+			if (asking_for != 0x03) {
+                                upsdebugx(3, "asking for: %02X", 0x03);
+                                ret = usb_get_string(udev, 0x03, 0x0409, buf, 102);
+                        }
+                        break;
+                case 5:
+			if (asking_for != 0x0c) {
+				upsdebugx(3, "asking for: %02X", 0x0c);
+        	                ret = usb_get_string(udev, 0x0c, 0x0409, buf, 102);
+			}
+                        break;
+		default:
+			hunnox_step = 2;
+	}
+	hunnox_step++;
+	if (hunnox_step > 5) {
+		hunnox_step = 3;
+	}
+
+	if (hunnox_step < 3) {
+		return -1;
+	} else {
+		return 0;
+	}
+}
+
 /* Krauler communication subdriver */
 static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 {
@@ -706,6 +758,10 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 
 	upsdebugx(3, "send: %.*s", (int)strcspn(cmd, "\r"), cmd);
 
+	if (buflen > 102) {
+		buflen = 102;
+	}
+
 	for (i = 0; command[i].str; i++) {
 
 		int	retry;
@@ -718,8 +774,28 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 
 			int	ret;
 
+			if  (hunnox_protocol(command[i].index) != 0) {
+				return 0;
+			}
+
+			upsdebugx(3, "asking for: %02X", command[i].index);
+
 			if (langid_fix != -1) {
 				/* Apply langid_fix value */
+/*				ret = usb_get_string(udev, 0x00, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x00, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x01, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x03, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x0d, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x03, langid_fix, buf, buflen);
+				usleep(5000);
+				ret = usb_get_string(udev, 0x0c, langid_fix, buf, buflen);
+				usleep(5000);*/
 				ret = usb_get_string(udev, command[i].index, langid_fix, buf, buflen);
 			} else {
 				ret = usb_get_string_simple(udev, command[i].index, buf, buflen);
@@ -888,19 +964,23 @@ static int	fuji_command(const char *cmd, char *buf, size_t buflen)
 {
 	unsigned char	tmp[8];
 	char		command[SMALLBUF] = "",
-			read[SMALLBUF] = "";
-	int		ret, answer_len, val2;
+			read[SMALLBUF] = "",
+			original_command[SMALLBUF] = "";
+	int		ret, answer_len, val2, send_len;
 	double		val1;
 	size_t		i;
 	const struct {
 		const char	*command;	/* Megatec command */
 		const int	answer_len;	/* Expected length of the answer to the ongoing query */
+		const char  *replaced;	/* Command to _really_ send */
+		const int 	real_len;
 	} query[] = {
-		{ "Q1",	47 },
-		{ "F",	22 },
-		{ "I",	39 },
-		{ NULL }
-	};
+		{ "QGS",	47, "\x09\x04", 102 },
+		{ "QS",	47, "\x09\x04", 102 },
+		{ "Q1",	47, "\x09\x04", 102 },
+		{ "F",	22, "F", 22 },
+		{ "I",	39, "I", 39 },
+		{ NULL }	};
 
 	/*
 	 * Queries (b1..b8) sent (as a 8-bytes interrupt) to the UPS adopt the following scheme:
@@ -927,6 +1007,7 @@ static int	fuji_command(const char *cmd, char *buf, size_t buflen)
 
 	/* Remove the CR */
 	snprintf(command, sizeof(command), "%.*s", (int)strcspn(cmd, "\r"), cmd);
+	snprintf(original_command, sizeof(original_command), "%.*s", (int)strcspn(cmd, "\r"), cmd);
 
 	/* Length of the command that will be sent to the UPS can be at most: 8 - 5 (0x80, 0x06, <LEN>, 0x03, <ANSWER_LEN>) = 3.
 	 * As a consequence also 'SnRm' commands (shutdown.{return,stayoff} and load.off) are not supported.
@@ -946,10 +1027,12 @@ static int	fuji_command(const char *cmd, char *buf, size_t buflen)
 	answer_len = 0;
 	for (i = 0; query[i].command; i++) {
 
-		if (strcmp(command, query[i].command))
+		if (strcmp(original_command, query[i].command))
 			continue;
 
 		answer_len = query[i].answer_len;
+		send_len = query[i].real_len;
+		snprintf(command, sizeof(command), "%s", query[i].replaced);
 		break;
 
 	}
@@ -967,7 +1050,7 @@ static int	fuji_command(const char *cmd, char *buf, size_t buflen)
 	/* <COMMAND> */
 	memcpy(&tmp[4], command, strlen(command));
 	/* <ANSWER_LEN> */
-	tmp[7] = answer_len;
+	tmp[7] = send_len;
 
 	upsdebug_hex(4, "command", (char *)tmp, 8);
 
@@ -984,6 +1067,7 @@ static int	fuji_command(const char *cmd, char *buf, size_t buflen)
 	/* Read reply */
 
 	memset(buf, 0, buflen);
+	upsdebugx(3, "receive buflen: %d", buflen);
 
 	for (i = 0; (i <= buflen - 8) && (memchr(buf, '\r', buflen) == NULL); i += ret) {
 
@@ -2024,11 +2108,11 @@ void	upsdrv_initups(void)
 			 *   The language IDs are 16 bit numbers, and they start at the third byte in the descriptor.
 			 *   See USB 2.0 specification, section 9.6.7, for more information on this.
 			 * This should allow automatic application of the workaround */
-			ret = usb_get_string(udev, 0, 0, tbuf, sizeof(tbuf));
+/*			ret = usb_get_string(udev, 0, 0, tbuf, sizeof(tbuf));
 			if (ret >= 4) {
 				langid = tbuf[2] | (tbuf[3] << 8);
 				upsdebugx(1, "First supported language ID: 0x%x (please report to the NUT maintainer!)", langid);
-			}
+			}*/
 		}
 
 	#endif	/* TESTING */

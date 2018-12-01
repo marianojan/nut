@@ -65,7 +65,6 @@ static item_t	zinto_qx2nut[] = {
 	{ "input.current.nominal",	0,	NULL,	"F\r",	"",	22,	'#',	"",	7,	9,	"%.1f",	QX_FLAG_STATIC,	NULL,	NULL,	NULL },
 	{ "battery.voltage.nominal",	0,	NULL,	"F\r",	"",	22,	'#',	"",	11,	15,	"%.1f",	QX_FLAG_STATIC,	NULL,	NULL,	NULL },
 	{ "input.frequency.nominal",	0,	NULL,	"F\r",	"",	22,	'#',	"",	17,	20,	"%.0f",	QX_FLAG_STATIC,	NULL,	NULL,	NULL },
-
 	/*
 	 * > [FW?\r]
 	 * < [#-------------   ------     VT12046Q  \r]
@@ -119,7 +118,11 @@ static testing_t	zinto_testing[] = {
 /* Subdriver-specific initups */
 static void	zinto_initups(void)
 {
+	upsdebugx(3, "=== LLAMADA A zinto_initups!.");
+
 	blazer_initups(zinto_qx2nut);
+
+	upsdebugx(3, "--- FIN LLAMADA A zinto_initups!.");
 }
 
 /* Subdriver interface */

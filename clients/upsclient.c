@@ -67,7 +67,7 @@
 
 #define UPSCLIENT_MAGIC 0x19980308
 
-#define SMALLBUF	512
+#define SMALLBUF	103
 
 #ifdef SHUT_RDWR
 #define shutdown_how SHUT_RDWR
