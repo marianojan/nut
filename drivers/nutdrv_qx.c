@@ -1808,6 +1808,7 @@ void	upsdrv_makevartable(void)
 	nut_usb_addvars();
 
 	addvar(VAR_VALUE, "langid_fix", "Apply the language ID workaround to the krauler subdriver (0x409 or 0x4095)");
+	addvar(VAR_VALUE, "noscanlangid", "Don't autoscan valid range for langid");
 #endif	/* QX_USB */
 
 #ifdef QX_SERIAL
@@ -2174,18 +2175,18 @@ void	upsdrv_initups(void)
 		dstate_setinfo("ups.productid", "%04x", usbdevice.ProductID);
 
 		/* Check for language ID workaround (#2) */
-		if (langid_fix != -1) {
+		if ((langid_fix != -1) && (!getval("noscanlangid"))) {
 			/* Future improvement:
 			 *   Asking for the zero'th index is special - it returns a string descriptor that contains all the language IDs supported by the device.
 			 *   Typically there aren't many - often only one.
 			 *   The language IDs are 16 bit numbers, and they start at the third byte in the descriptor.
 			 *   See USB 2.0 specification, section 9.6.7, for more information on this.
 			 * This should allow automatic application of the workaround */
-/*			ret = usb_get_string(udev, 0, 0, tbuf, sizeof(tbuf));
+			ret = usb_get_string(udev, 0, 0, tbuf, sizeof(tbuf));
 			if (ret >= 4) {
 				langid = tbuf[2] | (tbuf[3] << 8);
 				upsdebugx(1, "First supported language ID: 0x%x (please report to the NUT maintainer!)", langid);
-			}*/
+			}
 		}
 
 	#endif	/* TESTING */

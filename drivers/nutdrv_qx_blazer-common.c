@@ -46,10 +46,10 @@ int	blazer_claim(void)
 {
 	/* To tell whether the UPS is supported or not, we'll check both status (Q1/QS/D) and vendor (I/FW?) - provided that we were not told not to do it with the ups.conf flag 'novendor'. */
 
-	return 1;
+/*	return 1;
 
 	find_nut_info("input.voltage.nominal", 0, 0);
-	find_nut_info("device.model", 0, 0);
+	find_nut_info("device.model", 0, 0);*/
 	item_t	*item = find_nut_info("input.voltage", 0, 0);
 
 	/* Don't know what happened */
