@@ -1808,7 +1808,7 @@ void	upsdrv_makevartable(void)
 	nut_usb_addvars();
 
 	addvar(VAR_VALUE, "langid_fix", "Apply the language ID workaround to the krauler subdriver (0x409 or 0x4095)");
-	addvar(VAR_VALUE, "noscanlangid", "Don't autoscan valid range for langid");
+	addvar(VAR_FLAG, "noscanlangid", "Don't autoscan valid range for langid");
 #endif	/* QX_USB */
 
 #ifdef QX_SERIAL
