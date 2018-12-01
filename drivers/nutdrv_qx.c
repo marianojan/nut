@@ -687,7 +687,6 @@ static int	ippon_command(const char *cmd, char *buf, size_t buflen)
 
 static int 	hunnox_protocol(int asking_for) {
 	char	buf[1030];
-	int	ret;
 
 	int langid_fix_local = 0x0409;
 
@@ -698,27 +697,27 @@ static int 	hunnox_protocol(int asking_for) {
 	switch (hunnox_step) {
 		case 0:
 			upsdebugx(3, "asking for: %02X", 0x00);
-			ret = usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
-			ret = usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
-			ret = usb_get_string(udev, 0x01, langid_fix_local, buf, 1026);
+			usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
+			usb_get_string(udev, 0x00, langid_fix_local, buf, 1026);
+			usb_get_string(udev, 0x01, langid_fix_local, buf, 1026);
 			usleep(10000);
 			break;
 		case 1:
 			if (asking_for != 0x0d) {
 				upsdebugx(3, "asking for: %02X", 0x0d);
-	            ret = usb_get_string(udev, 0x0d, langid_fix_local, buf, 102);
+	            		usb_get_string(udev, 0x0d, langid_fix_local, buf, 102);
 			}
-            break;
+		        break;
 		case 2:
 			if (asking_for != 0x03) {
 				upsdebugx(3, "asking for: %02X", 0x03);
-				ret = usb_get_string(udev, 0x03, langid_fix_local, buf, 102);
+				usb_get_string(udev, 0x03, langid_fix_local, buf, 102);
 			}
 			break;
 		case 3:
 			if (asking_for != 0x0c) {
 				upsdebugx(3, "asking for: %02X", 0x0c);
-				ret = usb_get_string(udev, 0x0c, langid_fix_local, buf, 102);
+				usb_get_string(udev, 0x0c, langid_fix_local, buf, 102);
 			}
 			break;
 		default:
@@ -875,17 +874,8 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 }
 
 
-static int	fabula_command_hunnox(const char *cmd, char *buf, size_t buflen) {
-	return _fabula_command(cmd, buf, buf_len, TRUE)
-}
-
-static int	fabula_command(const char *cmd, char *buf, size_t buflen) {
-	return _fabula_command(cmd, buf, buf_len, FALSE)
-}
-
-
 /* Fabula communication subdriver */
-static int	_fabula_command(const char *cmd, char *buf, size_t buflen, bool hunnox_patch)
+static int	_fabula_command(const char *cmd, char *buf, size_t buflen, char hunnox_patch)
 {
 	const struct {
 		const char	*str;	/* Megatec command */
@@ -970,13 +960,41 @@ static int	_fabula_command(const char *cmd, char *buf, size_t buflen, bool hunno
 	/* Send command/Read reply */
 	if (langid_fix != -1) {
 		ret = usb_get_string(udev, index, langid_fix, buf, buflen);
-	} else {		
+	} else {
 		ret = usb_get_string_simple(udev, index, buf, buflen);
 	}
 
 	if (ret <= 0) {
 		upsdebugx(3, "read: %s (%d)", ret ? usb_strerror() : "timeout", ret);
 		return ret;
+	}
+
+	if (hunnox_patch) {
+		if (langid_fix != -1) {
+			/* Limit this check, at least for now */
+			/* Invalid receive size - message corrupted */
+			if (ret != buf[0]) {
+				upsdebugx(1, "size mismatch: %d / %d", ret, buf[0]);
+				return 0;
+			}
+
+			/* Simple unicode -> ASCII inplace conversion
+			 * FIXME: this code is at least shared with mge-shut/libshut
+			 * Create a common function? */
+			unsigned int	di, si, size = buf[0];
+			for (di = 0, si = 2; si < size; si += 2) {
+				if (di >= (buflen - 1))
+					break;
+
+				if (buf[si + 1])	/* high byte */
+					buf[di++] = '?';
+				else
+					buf[di++] = buf[si];
+			}
+
+			buf[di] = 0;
+			ret = di;
+		}
 	}
 
 	upsdebug_hex(5, "read", buf, ret);
@@ -994,6 +1012,18 @@ static int	_fabula_command(const char *cmd, char *buf, size_t buflen, bool hunno
 
 	return ret;
 }
+
+
+static int      fabula_command_hunnox(const char *cmd, char *buf, size_t buflen)
+{
+        return _fabula_command(cmd, buf, buflen, TRUE);
+}
+
+static int      fabula_command(const char *cmd, char *buf, size_t buflen)
+{
+        return _fabula_command(cmd, buf, buflen, FALSE);
+}
+
 
 /* Fuji communication subdriver */
 static int	fuji_command(const char *cmd, char *buf, size_t buflen)
@@ -1166,6 +1196,7 @@ static void	*fabula_subdriver(USBDevice_t *device)
 static void *fabula_hunnox_subdriver(USBDevice_t *device)
 {
 	subdriver_command = &fabula_command_hunnox;
+	return NULL;
 }
 
 static void	*fuji_subdriver(USBDevice_t *device)
