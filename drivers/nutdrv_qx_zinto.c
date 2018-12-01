@@ -133,7 +133,7 @@ subdriver_t	zinto_subdriver = {
 	zinto_initups,
 	NULL,
 	blazer_makevartable,
-	"ACK",
+	"UPS No Ack",
 	NULL,
 #ifdef TESTING
 	zinto_testing,

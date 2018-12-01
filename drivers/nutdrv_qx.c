@@ -748,6 +748,8 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 		{ "Q\r", 0x07, '\r' },
 		{ "C\r", 0x0b, '\r' },
 		{ "CT\r", 0x0b, '\r' },
+		{ "S01\r", 0x68, '\r' },
+		{ "S02\r", 0x78, '\r' },
 		{ NULL }
 	};
 
@@ -839,15 +841,22 @@ static int	krauler_command(const char *cmd, char *buf, size_t buflen)
 				strcspn(buf, "\r") == 10 &&
 				!strncasecmp(buf, "UPS No Ack", 10)
 			) {
-				upsdebugx(3, "read: %.*s", (int)strcspn(buf, "\r"), buf);
-				continue;
+
+				upsdebugx(3, "read (UPS No Ack): %.*s", (int)strcspn(buf, "\r"), buf);
+
+/*				buf[0] = 'A';
+				buf[1] = 'C';
+				buf[2] = 'K';
+				buf[3] = '\0';*/
+
+				return ret;
 			}
 
 			/* Replace the first byte of what we received with the correct one */
 			buf[0] = command[i].prefix;
 
-			upsdebug_hex(5, "read", buf, ret);
-			upsdebugx(3, "read: %.*s", (int)strcspn(buf, "\r"), buf);
+			upsdebug_hex(5, "readF", buf, ret);
+			upsdebugx(3, "readF2: %.*s", (int)strcspn(buf, "\r"), buf);
 
 			return ret;
 
